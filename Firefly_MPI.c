@@ -15,24 +15,25 @@ typedef void (*InitializationCallback)(int dimension, double* sol);
 InitializationCallback inicjalizacja_danych = &init1;
 
 void inicjalizuj_ffa(double* ffa, double* ffa_prev_gen, double* f, int ilosc_swietlikow, int wymiar_problemu);
-void cleanUp(double* ffa, double* ffa_prev_gen, double* f, double* global_best_param);
 void inicjalizuj_funkcje(int numer_funkcji);
 void obliczWartoscFunkcji(int dim, int nf, double* in, double* out);
-void zapiszNajlepszyWynik(double* f, double* ffa, double* global_best, double* global_best_param, int ilosc_swietlikow, int wymiar_problemu);
-void obliczKolejnaGeneracje(double* in, double* out, double val, double alpha, double beta, double gamma, int ilosc_swietlikow, int wymiar_problemu, int mynum, int nprocs);
+void zapiszNajlepszyWynik(double* f, double* ffa, double* global_best, double* global_best_param, int ilosc_swietlikow, int wymiar_problemu, double* prev_gen_best);
+void obliczKolejnaGeneracje(double* in, double* out, double* val, double alpha, double beta, double gamma, int ilosc_swietlikow, int wymiar_problemu, double prev_gen_best, unsigned int* seed);
+void przekopiujObecnaGeneracje(double* new, double* old, int ilosc_swietlikow, int wymiar_problemu);
 
 MPI_Status status;
 main(int argc, char **argv){
   unsigned int seed;
 
+  double prev_gen_best = DBL_MAX;
   double global_best = DBL_MAX; //najlepszy wynik globalnie
  
   int i, j, mynum, nprocs;
   int numer_funkcji = 1;
 
-  int ilosc_swietlikow = 10;
-  int wymiar_problemu = 20;
-  int limit_generacji = 2;
+  int ilosc_swietlikow = 500;
+  int wymiar_problemu = 300;
+  int limit_generacji = 100;
   double alpha_local = 0.5;
   double beta_local = 1;
   double gamma_local = 0.01;
@@ -61,18 +62,43 @@ main(int argc, char **argv){
   inicjalizuj_ffa(p_ffa, p_ffa_prev_gen, p_f, ilosc_swietlikow, wymiar_problemu);
   seed = time(NULL) ^ getpid();
 
-  startTime = MPI_Wtime();
+  if(mynum==0)startTime = MPI_Wtime();
   for(i=0; i<limit_generacji; i++){
-    obliczWartoscFunkcji(wymiar_problemu, ilosc_swietlikow, p_ffa, p_f);
-    //sendCalculationResults();
-    //zapiszNajlepszyWynik();
-    //obliczKolejnaGeneracje();
-    //sendNewlyCalculatedGeneration();    
+    obliczWartoscFunkcji(
+	wymiar_problemu, 
+	ilosc_swietlikow, 
+	p_ffa, 
+	p_f);
+    zapiszNajlepszyWynik(
+	p_f, 
+	p_ffa, 
+	&global_best, 
+	p_global_best_param, 
+	ilosc_swietlikow, 
+	wymiar_problemu, 
+	&prev_gen_best);
+    obliczKolejnaGeneracje(
+	p_ffa_prev_gen, 
+	p_ffa, 
+	p_f, 
+	alpha_local, 
+	beta_local, 
+	gamma_local, 
+	ilosc_swietlikow, 
+	wymiar_problemu, 
+	prev_gen_best, 
+	&seed);
+    przekopiujObecnaGeneracje(
+	p_ffa, 
+	p_ffa_prev_gen,
+	ilosc_swietlikow, 
+	wymiar_problemu);
+    if(mynum==0)printf("Podglad generacji %d, najlepszy wynik lokalnie: %.4f, globalnie %.4f\n",i,prev_gen_best,global_best); 
+    MPI_Barrier(MPI_COMM_WORLD);
   }
-  endTime = MPI_Wtime();
-  printf("Czas wykonania obliczeń: %f\n",endTime-startTime);
+  if(mynum==0)endTime = MPI_Wtime();
+  if(mynum==0)printf("Czas wykonania obliczeń: %f\n",endTime-startTime);
 
-  cleanUp(ffa, ffa_prev_gen, f, global_best_param);
   MPI_Finalize();
 
 }
@@ -103,58 +129,139 @@ void inicjalizuj_ffa(double* ffa, double* ffa_prev_gen, double* f, int ilosc_swi
 
   for(i=0;i<ilosc_swietlikow;i++){
     for(j=0;j<wymiar_problemu;j++){
-      *(ffa+i*wymiar_problemu+j) = *(dane+j);
-      *(ffa_prev_gen+i*wymiar_problemu+j) = *(dane+j);
+      ffa[i*wymiar_problemu+j] = dane[j];
+      ffa_prev_gen[i*wymiar_problemu+j] = dane[j];
     }
-    *(f+i) = 1.0;
-    printf("Podstawiono %f pod wartosc f[%d], %p\n",*(f+i), i, f+i);
+    f[i] = 1.0;
   }
-
   free(dane);
 }
 
 void obliczWartoscFunkcji(int dim, int nf, double* in, double* out){
   int i, mynum, nprocs;
+  double* np;
+  MPI_Status status;
   MPI_Request request[nf];
   MPI_Request* p_request = request;
   MPI_Comm_rank(MPI_COMM_WORLD, &mynum);
   MPI_Comm_size(MPI_COMM_WORLD, &nprocs);
 
   for(i=mynum; i<nf; i+=nprocs){
-    *(out+i) = funkcja(dim, in+i*dim);
+    np = &out[i];
+    *np = funkcja(dim, &in[i*dim]);
     if(mynum != 0){
-      //MPI_Isend(out+i, 1, MPI_DOUBLE, 0, i, MPI_COMM_WORLD, p_request);
+      MPI_Isend((void*)&out[i], 1, MPI_DOUBLE, 0, i, MPI_COMM_WORLD, p_request);
     } 
   }
 
   if(mynum ==0){
     for(i=0; i<nf; i++){
-      if(i % mynum != 0){
-        //MPI_Irecv(out+i, 1, MPI_DOUBLE, i % mynum, i, MPI_COMM_WORLD, p_request+i);
+      if(i % nprocs != 0){
+        MPI_Recv((void*)&out[i], 1, MPI_DOUBLE, i % nprocs, i, MPI_COMM_WORLD, &status);
+      }
+    }
+  }
+  MPI_Bcast((void*)out,nf,MPI_DOUBLE,0,MPI_COMM_WORLD);
+}
+
+void zapiszNajlepszyWynik(double* f, double* ffa, double* global_best, double* global_best_param, int ilosc_swietlikow, int wymiar_problemu, double* prev_gen_best){
+  int mynum, nprocs;
+  MPI_Comm_rank(MPI_COMM_WORLD, &mynum);
+  MPI_Comm_size(MPI_COMM_WORLD, &nprocs);
+  *prev_gen_best = DBL_MAX;
+
+  if(mynum == 0){
+    int i, id = -1;
+    double best = *global_best;
+    for( i=0; i<ilosc_swietlikow; i++){
+      if(f[i] < best){
+        id = i;
+        best = f[i];
+      }
+      if(f[i] < *prev_gen_best){
+        *prev_gen_best = f[i];
+      }
+    }
+
+    if(id != -1){
+      printf("id: %d, with best %.4f \n", id, best);
+      *global_best = best;
+      memcpy(global_best_param, &ffa[id*wymiar_problemu], sizeof(double) * wymiar_problemu);
+    }
+  }
+  MPI_Bcast(prev_gen_best,1,MPI_DOUBLE,0,MPI_COMM_WORLD);
+}
+
+void obliczKolejnaGeneracje(
+	double* in, 
+	double* out, 
+	double* val, 
+	double alpha, 
+	double beta, 
+	double gamma, 
+	int ilosc_swietlikow, 
+	int wymiar_problemu,
+  	double prev_gen_best,
+        unsigned int* seed){
+
+  int i, j, k, mynum, nprocs;
+  double r, rnd, beta0, tmp;
+  MPI_Comm_rank(MPI_COMM_WORLD, &mynum);
+  MPI_Comm_size(MPI_COMM_WORLD, &nprocs);
+  double lokalne_kroki[ilosc_swietlikow * wymiar_problemu];
+  double zebranie_krokow[ilosc_swietlikow * wymiar_problemu];
+  for(i=0; i<ilosc_swietlikow * wymiar_problemu; i++){
+    lokalne_kroki[i] = 0.0;
+    zebranie_krokow[i] = 0.0;
+  }
+
+  for(i=0; i<ilosc_swietlikow; i++){
+    for(j=0; j<ilosc_swietlikow; j++){
+      r = 0.0;
+      tmp = 0.0;
+      for(k=mynum;k<wymiar_problemu; k+=nprocs){
+        tmp += (in[i*wymiar_problemu+k] - in[j*wymiar_problemu+k]) * 
+		(in[i*wymiar_problemu+k] - in[j*wymiar_problemu+k]);
+      }
+      tmp = sqrt(tmp);
+      MPI_Allreduce(&tmp,&r,1,MPI_DOUBLE,MPI_SUM,MPI_COMM_WORLD);
+      if(val[i] == prev_gen_best){
+        beta0 = beta * exp(-gamma*pow(r,2.0));       
+        for(k=mynum; k<wymiar_problemu; k+=nprocs){
+          rnd = ((double)rand_r(seed) / ((double)(RAND_MAX)+(double)(1)));
+          double u = alpha * (rnd - 0.5);
+          lokalne_kroki[i*wymiar_problemu+k] += u;
+        }
+      } else if(val[i] > val[j]){
+        beta0 = beta * exp(-gamma*pow(r,2.0));
+        for(k=mynum; k<wymiar_problemu; k+=nprocs){
+          rnd = ((double)rand_r(seed) / ((double)(RAND_MAX)+(double)(1)));
+          double u = alpha * (rnd - 0.5);
+          lokalne_kroki[i*wymiar_problemu+k] += beta0 * 
+   		(in[j*wymiar_problemu+k] - in[i*wymiar_problemu+k]) + u;
+        }
       }
     }
   }
   
-  MPI_Barrier(MPI_COMM_WORLD);
-}
-
-void zapiszNajlepszyWynik(double* f, double* ffa, double* global_best, double* global_best_param, int ilosc_swietlikow, int wymiar_problemu){
-  int i, id = -1;
-  double best = *global_best;
-  for( i=0; i<ilosc_swietlikow; i++){
-    if(*(f+i) < best){
-      id = i;
-      best = *(f+i);
+  if(MPI_Reduce(
+	&lokalne_kroki,
+	&zebranie_krokow,
+	ilosc_swietlikow * wymiar_problemu,
+	MPI_DOUBLE,
+	MPI_SUM,
+	0,
+	MPI_COMM_WORLD)!=MPI_SUCCESS){
+    printf("\"Lokalne kroki\" reduce error!\n");
+  }
+  if(mynum==0){
+    for(i=0; i<ilosc_swietlikow * wymiar_problemu; i++){
+      out[i] += zebranie_krokow[i];
     }
   }
-
-  if(id != -1){
-    printf("id: %d, with best %.4f \n", id, best);
-    *global_best = best;
-    memcpy(global_best_param, ffa+id*wymiar_problemu, sizeof(double) * wymiar_problemu);
-  }
+  MPI_Bcast((void*)out,ilosc_swietlikow*wymiar_problemu, MPI_DOUBLE,0,MPI_COMM_WORLD);
 }
 
-void cleanUp(double* ffa, double* ffa_prev_gen, double* f, double* global_best_param){
-  
+void przekopiujObecnaGeneracje(double* new, double* old, int ilosc_swietlikow, int wymiar_problemu){
+  memcpy(new, new, ilosc_swietlikow*wymiar_problemu*sizeof(double));
 }
