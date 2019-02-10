@@ -5,7 +5,7 @@
 void init1(int wymiar_problemu, double* sol){
   int i;
   for(i=0;i<wymiar_problemu;i++){
-    sol[i] = 3.0;
+    *(sol+i) = 3.0;
   }
 }
 
@@ -14,8 +14,8 @@ double funkcja1(int wymiar_problemu, double* sol){
   double sum = 0.0;
   int i;
   for(i=2;i<wymiar_problemu;i++){
-    sum += 	100*(pow(sol[i],2.0)+pow(sol[i-1],2.0)) 
-		+pow(sol[i-2],2.0); 
+    sum += 	100*(pow(*(sol+i),2.0)+pow(*(sol+i),2.0)) 
+		+pow(*(sol+i),2.0); 
   }
   return sum;
 }
