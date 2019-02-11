@@ -93,11 +93,14 @@ main(int argc, char **argv){
 	p_ffa_prev_gen,
 	ilosc_swietlikow, 
 	wymiar_problemu);
-    if(mynum==0)printf("Podglad generacji %d, najlepszy wynik lokalnie: %.4f, globalnie %.4f\n",i,prev_gen_best,global_best); 
+    if(mynum==0){
+      //printf("Podglad generacji %d, najlepszy wynik lokalnie: %.4f, globalnie %.4f\n",i,prev_gen_best,global_best);
+      printf("%d,", i);    
+    }  
     MPI_Barrier(MPI_COMM_WORLD);
   }
   if(mynum==0)endTime = MPI_Wtime();
-  if(mynum==0)printf("Czas wykonania obliczeń: %f\n",endTime-startTime);
+  if(mynum==0)printf("\nCzas wykonania obliczeń: %f\n",endTime-startTime);
 
   MPI_Finalize();
 
@@ -184,7 +187,7 @@ void zapiszNajlepszyWynik(double* f, double* ffa, double* global_best, double* g
     }
 
     if(id != -1){
-      printf("id: %d, with best %.4f \n", id, best);
+      //printf("id: %d, with best %.4f \n", id, best);
       *global_best = best;
       memcpy(global_best_param, &ffa[id*wymiar_problemu], sizeof(double) * wymiar_problemu);
     }
@@ -205,7 +208,7 @@ void obliczKolejnaGeneracje(
         unsigned int* seed){
 
   int i, j, k, mynum, nprocs;
-  double r, rnd, beta0, tmp;
+  double rnd, beta0, tmp;
   MPI_Comm_rank(MPI_COMM_WORLD, &mynum);
   MPI_Comm_size(MPI_COMM_WORLD, &nprocs);
   double lokalne_kroki[ilosc_swietlikow * wymiar_problemu];
@@ -215,26 +218,17 @@ void obliczKolejnaGeneracje(
     zebranie_krokow[i] = 0.0;
   }
 
-  for(i=0; i<ilosc_swietlikow; i++){
+  for(i=mynum; i<ilosc_swietlikow; i+=nprocs){
     for(j=0; j<ilosc_swietlikow; j++){
-      r = 0.0;
       tmp = 0.0;
-      for(k=mynum;k<wymiar_problemu; k+=nprocs){
+      for(k=0;k<wymiar_problemu; k++){
         tmp += (in[i*wymiar_problemu+k] - in[j*wymiar_problemu+k]) * 
 		(in[i*wymiar_problemu+k] - in[j*wymiar_problemu+k]);
       }
       tmp = sqrt(tmp);
-      MPI_Allreduce(&tmp,&r,1,MPI_DOUBLE,MPI_SUM,MPI_COMM_WORLD);
-      if(val[i] == prev_gen_best){
-        beta0 = beta * exp(-gamma*pow(r,2.0));       
-        for(k=mynum; k<wymiar_problemu; k+=nprocs){
-          rnd = ((double)rand_r(seed) / ((double)(RAND_MAX)+(double)(1)));
-          double u = alpha * (rnd - 0.5);
-          lokalne_kroki[i*wymiar_problemu+k] += u;
-        }
-      } else if(val[i] > val[j]){
-        beta0 = beta * exp(-gamma*pow(r,2.0));
-        for(k=mynum; k<wymiar_problemu; k+=nprocs){
+      if(val[i] > val[j]){
+        beta0 = beta * exp(-gamma*pow(tmp,2.0));
+        for(k=0; k<wymiar_problemu; k++){
           rnd = ((double)rand_r(seed) / ((double)(RAND_MAX)+(double)(1)));
           double u = alpha * (rnd - 0.5);
           lokalne_kroki[i*wymiar_problemu+k] += beta0 * 
@@ -242,26 +236,30 @@ void obliczKolejnaGeneracje(
         }
       }
     }
+    if(val[i] == prev_gen_best){
+        beta0 = beta * exp(-gamma*pow(tmp,2.0));       
+        for(k=0; k<wymiar_problemu; k++){
+          rnd = ((double)rand_r(seed) / ((double)(RAND_MAX)+(double)(1)));
+          double u = alpha * (rnd - 0.5);
+          lokalne_kroki[i*wymiar_problemu+k] += u;
+        }
+    }
   }
-  
-  if(MPI_Reduce(
-	&lokalne_kroki,
-	&zebranie_krokow,
-	ilosc_swietlikow * wymiar_problemu,
+  MPI_Allreduce(
+	&lokalne_kroki, 
+	&zebranie_krokow, 
+	ilosc_swietlikow * wymiar_problemu, 
 	MPI_DOUBLE,
 	MPI_SUM,
-	0,
-	MPI_COMM_WORLD)!=MPI_SUCCESS){
-    printf("\"Lokalne kroki\" reduce error!\n");
-  }
+	MPI_COMM_WORLD);
   if(mynum==0){
     for(i=0; i<ilosc_swietlikow * wymiar_problemu; i++){
       out[i] += zebranie_krokow[i];
     }
   }
-  MPI_Bcast((void*)out,ilosc_swietlikow*wymiar_problemu, MPI_DOUBLE,0,MPI_COMM_WORLD);
+  MPI_Bcast(out,ilosc_swietlikow*wymiar_problemu,MPI_DOUBLE,0,MPI_COMM_WORLD);
 }
 
 void przekopiujObecnaGeneracje(double* new, double* old, int ilosc_swietlikow, int wymiar_problemu){
-  memcpy(new, new, ilosc_swietlikow*wymiar_problemu*sizeof(double));
+  memcpy(old, new, ilosc_swietlikow*wymiar_problemu*sizeof(double));
 }
