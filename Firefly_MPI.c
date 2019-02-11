@@ -29,7 +29,7 @@ main(int argc, char **argv){
   double global_best = DBL_MAX; //najlepszy wynik globalnie
  
   int i, j, mynum, nprocs;
-  int numer_funkcji = 1;
+  int numer_funkcji = 2;
 
   int ilosc_swietlikow = 500;
   int wymiar_problemu = 300;
@@ -92,15 +92,14 @@ main(int argc, char **argv){
 	p_ffa, 
 	p_ffa_prev_gen,
 	ilosc_swietlikow, 
-	wymiar_problemu);
-    if(mynum==0){
-      //printf("Podglad generacji %d, najlepszy wynik lokalnie: %.4f, globalnie %.4f\n",i,prev_gen_best,global_best);
-      printf("%d,", i);    
-    }  
+	wymiar_problemu); 
     MPI_Barrier(MPI_COMM_WORLD);
   }
-  if(mynum==0)endTime = MPI_Wtime();
-  if(mynum==0)printf("\nCzas wykonania obliczeń: %f\n",endTime-startTime);
+  if(mynum==0){
+    endTime = MPI_Wtime();
+    printf("Najlepszy wynik: %.4f\n",global_best);
+    printf("Czas wykonania obliczeń: %f\n",endTime-startTime);
+  }
 
   MPI_Finalize();
 
